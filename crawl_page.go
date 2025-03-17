@@ -3,46 +3,27 @@ package main
 import (
 	"fmt"
 	"net/url"
-	"sync"
 )
 
-type config struct {
-	pages              map[string]int
-	baseURL            *url.URL
-	mu                 *sync.Mutex
-	concurrencyControl chan struct{}
-	wg                 *sync.WaitGroup
-}
+func (cfg *config) crawlPage(rawCurrentURL string) {
+	cfg.concurrencyControl <- struct{}{}
+	defer func() {
+		<-cfg.concurrencyControl
+		cfg.wg.Done()
+	}()
 
-func newConfig(rawBaseURL string, bufferSize int) *config {
-	baseURL, err := url.Parse(rawBaseURL)
-	if err != nil {
-		fmt.Printf("error parsing base url: %v", err)
-		return nil
-	}
-	return &config{
-		pages:              make(map[string]int),
-		baseURL:            baseURL,
-		mu:                 &sync.Mutex{},
-		concurrencyControl: make(chan struct{}, bufferSize),
-		wg:                 &sync.WaitGroup{},
-	}
-}
-
-func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
-	baseURL, err := url.Parse(rawBaseURL)
-	if err != nil {
-		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawCurrentURL, err)
+	if cfg.pagesLen() >= cfg.maxPages {
 		return
 	}
+
 	currentURL, err := url.Parse(rawCurrentURL)
 	if err != nil {
-		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", rawBaseURL, err)
+		fmt.Printf("Error - crawlPage: couldn't parse URL '%s': %v\n", cfg.baseURL, err)
 		return
 	}
 
 	// Skip other websites
-	if currentURL.Hostname() != baseURL.Hostname() {
+	if currentURL.Hostname() != cfg.baseURL.Hostname() {
 		return
 	}
 
@@ -52,12 +33,10 @@ func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
 		return
 	}
 
-	if _, visited := pages[normalizedCurrentURL]; visited {
-		pages[normalizedCurrentURL]++
+	isFirst := cfg.addPageVisit(normalizedCurrentURL)
+	if !isFirst {
 		return
 	}
-
-	pages[normalizedCurrentURL] = 1
 
 	fmt.Printf("crawling %s\n", rawCurrentURL)
 
@@ -67,13 +46,14 @@ func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
 		return
 	}
 
-	urls, err := getURLsFromHTML(body, rawBaseURL)
+	urls, err := getURLsFromHTML(body, cfg.baseURL)
 	if err != nil {
 		fmt.Printf("Error - getURLsFromHTML: %v\n", err)
 		return
 	}
 
 	for _, url := range urls {
-		crawlPage(rawBaseURL, url, pages)
+		cfg.wg.Add(1)
+		go cfg.crawlPage(url)
 	}
 }
